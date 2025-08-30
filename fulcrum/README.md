@@ -175,11 +175,16 @@ announce = false
 - Il client verifica il **certificato X.509** del server. Usa sempre **SSL/TLS** su reti non fidate o pubblico.
 
 #### Generare un certificato **autofirmato** (self‑signed)
-Per test, LAB o reti private (senza dominio pubblico):
+Per test rapidi:
+```bash
+openssl req -x509 -newkey rsa:4096 -keyout key.key -out cert.crt -days 365 -nodes -subj "/CN=localhost"
+```
+
+Per LAB o reti private (senza dominio pubblico):
 ```bash
 mkdir -p ./ssl
 openssl req -x509 -newkey rsa:4096 -sha256 -days 825 -nodes \
-  -keyout ./ssl/key.key -out ./ssl/cert.crt \
+  -keyout ./key.key -out ./cert.crt \
   -subj "/CN=<domain|ip>" \
   -addext "subjectAltName=DNS:<domain>,IP:<ip>"
 ```
