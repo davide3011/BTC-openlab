@@ -1,0 +1,16 @@
+services:
+  fulcrum:
+    image: cculianu/fulcrum:latest
+    container_name: fulcrum-regtest
+    ports:
+      - "50001:50001"   # TCP
+      - "50002:50002"   # SSL
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./fulcrum.conf:/etc/fulcrum/fulcrum.conf:ro
+      - ./fulcrum-db:/data
+      - ./cert.crt:/etc/fulcrum/ssl/cert.crt:ro   # Certificato
+      - ./key.key:/etc/fulcrum/ssl/key.key:ro     # Chiave privata
+    command: ["Fulcrum", "/etc/fulcrum/fulcrum.conf"]
+    restart: unless-stopped
