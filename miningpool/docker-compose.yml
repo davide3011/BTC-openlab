@@ -1,0 +1,23 @@
+services:
+  ckpool:
+    build: .
+    container_name: ckpool
+    restart: unless-stopped
+    working_dir: /opt/ckpool
+
+    # esegui col tuo UID:GID così i file in ./logs sono leggibili da te
+    user: "1000:1000"   # oppure: "${UID}:${GID}" con .env
+
+    ports:
+      - "3333:3333"
+
+    volumes:
+      - ./ckpool.conf:/opt/ckpool/ckpool.conf:ro
+      - ./logs:/opt/ckpool/logs
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # abilita log su file (-L) e livello log (-l 5)
+    command: ["./src/ckpool", "-c", "./ckpool.conf", "-l", "5", "-L"]
+
