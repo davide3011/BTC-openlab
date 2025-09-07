@@ -58,6 +58,10 @@ make
 mkdir -p logs
 
 
+# Imposta i permessi della cartella log:
+sudo chown -R 1000:1000 logs
+
+
 # Avvia ckpool con il tuo file di configurazione
 ./src/ckpool -c ./ckpool.conf -l 5 -L
 
@@ -75,35 +79,36 @@ mkdir -p logs
 - Piccolo overhead di containerizzazione.
 
 ### Esecuzione con Docker
-Dopo aver scaricato il repository e aggiunto il `Dockerfile` e il `docker-compose.yml`:
 
-
-1. Imposta i permessi della cartella log:
 ```bash
+
+# Crea la directory dei log
+mkdir -p logs
+
+
+# Imposta i permessi della cartella log
 sudo chown -R 1000:1000 logs
-```
 
-2. Avvia in background:
-```bash
+
+# Avvia in background
 docker compose up -d --build
-```
 
-3. Attacca per vedere i parametri in tempo reale:
-```bash
-docker attach ckpool
-```
-(uscita senza stop: `Ctrl+p` poi `Ctrl+q`)
 
-4. In alternativa:
-```bash
+# Log in tempo reale
 docker logs -f ckpool
+
+
+# parametri in tempo reale:
+docker attach ckpool      # uscita senza stop: `Ctrl+p` poi `Ctrl+q`
 ```
 
 ---
 
 ## Configurazione - `ckpool.conf`
 
-ckpool richiede un file di configurazione, da montare nel container o usare localmente. Esempio minimale:
+ckpool richiede un file di configurazione, da montare nel container o usare localmente. Per ulteriori informazioni consultare la documentazione ufficilale.
+
+Esempio minimale:
 
 ```ini
 {
@@ -132,6 +137,8 @@ ckpool richiede un file di configurazione, da montare nel container o usare loca
 }
 
 ```
+
+> N.B: nel caso in cui il container deve girare sullo stesso host del nodo bitcoin sostituire `<host>` con `host.docker.internal`
 ---
 
 ## Risoluzione problemi
@@ -150,5 +157,6 @@ ckpool richiede un file di configurazione, da montare nel container o usare loca
 # Con Docker
 sudo chown -R 1000:1000 logs
 docker compose up -d
+docker logs -f ckpool
 docker attach ckpool
 ```
