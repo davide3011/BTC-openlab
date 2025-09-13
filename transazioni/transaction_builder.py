@@ -1,5 +1,6 @@
 import struct
 import math
+import hashlib
 from typing import List, Tuple, Dict, Any
 from ecdsa import SigningKey
 
@@ -7,7 +8,7 @@ from electrum_client import ElectrumClient
 from utxo_manager import UTXO
 from wallet_utils import Wallet, get_scriptpubkey_for_address
 from script_types import get_script_type, is_witness_script, create_scriptcode_p2wpkh
-from crypto_utils import vi, read_varint, sha256d, der_low_s, little_endian
+from crypto_utils import vi, read_varint, sha256d, der_low_s, little_endian, tagged_hash, schnorr_sign, taproot_tweak_private_key
 from config import DUST_LIMIT
 
 class TransactionInput:
@@ -182,7 +183,18 @@ class TransactionBuilder:
     
     def sign_input_legacy(self, tx: Transaction, input_idx: int, prev_spk: bytes, 
                          wallet: Wallet, sighash_type: int = 1) -> bytes:
-        """Firma un input legacy (P2PKH/P2PK)"""
+        """Firma un input legacy (P2PKH/P2PK/P2SH)"""
+        # Determina il tipo di script
+        script_type = get_script_type(prev_spk)
+        
+        # Per P2SH, usa il redeem script per la firma
+        if script_type.name == "P2SH" and wallet.is_p2sh:
+            if not wallet.redeem_script:
+                raise ValueError("Redeem script richiesto per wallet P2SH")
+            script_for_signing = wallet.redeem_script
+        else:
+            script_for_signing = prev_spk
+        
         # Crea preimage per firma legacy
         preimage = struct.pack("<I", tx.version)
         preimage += vi(len(tx.inputs))
@@ -193,8 +205,8 @@ class TransactionBuilder:
             preimage += struct.pack("<I", inp.vout)
             
             if i == input_idx:
-                # Input da firmare: usa prev_spk
-                preimage += vi(len(prev_spk)) + prev_spk
+                # Input da firmare: usa script_for_signing
+                preimage += vi(len(script_for_signing)) + script_for_signing
             else:
                 # Altri input: scriptSig vuoto
                 preimage += vi(0)
@@ -213,8 +225,13 @@ class TransactionBuilder:
         # Hash e firma
         z = sha256d(preimage)
         
-        # Determina il tipo di script e usa la funzione di firma appropriata
-        script_type = get_script_type(prev_spk)
+        # Gestisce firma P2SH multisig
+        if script_type.name == "P2SH" and wallet.is_p2sh:
+            from script_types import sig_p2sh_multisig
+            signing_keys = wallet.get_signing_keys()
+            return sig_p2sh_multisig(z, signing_keys, wallet.redeem_script, wallet.m)
+        
+        # Gestisce altri tipi di script
         if script_type and script_type.can_sign():
             # Usa la funzione di firma del tipo di script
             return script_type.sign(z, wallet.signing_key, wallet.public_key, prev_spk)
@@ -278,6 +295,99 @@ class TransactionBuilder:
         # Witness stack: [sig, pubkey]
         return [sig, wallet.public_key]
     
+    def sign_input_taproot(self, tx: Transaction, input_idx: int, prev_spk: bytes, 
+                          amount: int, wallet: Wallet, sighash_type: int = 0) -> List[bytes]:
+        """Firma un input Taproot (P2TR) secondo BIP341"""
+        # BIP341 sighash per Taproot
+        
+        # Epoch (sempre 0 per ora)
+        epoch = b"\x00"
+        
+        # Sighash type
+        sighash_bytes = bytes([sighash_type])
+        
+        # Version e locktime
+        version = struct.pack("<I", tx.version)
+        locktime = struct.pack("<I", tx.locktime)
+        
+        # Se non è ANYONECANPAY, include tutti gli input
+        if sighash_type & 0x80 == 0:
+            # sha_prevouts: hash di tutti i prevout
+            prevouts_data = b""
+            for inp in tx.inputs:
+                prevouts_data += little_endian(inp.txid) + struct.pack("<I", inp.vout)
+            sha_prevouts = hashlib.sha256(prevouts_data).digest()
+            
+            # sha_amounts: hash di tutti gli importi (per ora semplificato)
+            amounts_data = struct.pack("<Q", amount) * len(tx.inputs)
+            sha_amounts = hashlib.sha256(amounts_data).digest()
+            
+            # sha_scriptpubkeys: hash di tutti gli scriptPubKey (per ora semplificato)
+            scriptpubkey_data = vi(len(prev_spk)) + prev_spk
+            scriptpubkeys_data = scriptpubkey_data * len(tx.inputs)
+            sha_scriptpubkeys = hashlib.sha256(scriptpubkeys_data).digest()
+            
+            # sha_sequences: hash di tutte le sequence
+            sequences_data = b""
+            for inp in tx.inputs:
+                sequences_data += struct.pack("<I", inp.sequence)
+            sha_sequences = hashlib.sha256(sequences_data).digest()
+        else:
+            # ANYONECANPAY: usa hash vuoti
+            sha_prevouts = b"\x00" * 32
+            sha_amounts = b"\x00" * 32
+            sha_scriptpubkeys = b"\x00" * 32
+            sha_sequences = b"\x00" * 32
+        
+        # Se non è SINGLE o NONE, include tutti gli output
+        if (sighash_type & 0x1f) not in [2, 3]:  # Non SINGLE o NONE
+            outputs_data = b""
+            for out in tx.outputs:
+                outputs_data += out.serialize()
+            sha_outputs = hashlib.sha256(outputs_data).digest()
+        else:
+            sha_outputs = b"\x00" * 32
+        
+        # Spend type (0x00 per key path spending)
+        spend_type = b"\x00"
+        
+        # Input index
+        input_index = struct.pack("<I", input_idx)
+        
+        # Costruisce il messaggio da firmare secondo BIP341
+        message = (
+            epoch +
+            sighash_bytes +
+            version +
+            locktime +
+            sha_prevouts +
+            sha_amounts +
+            sha_scriptpubkeys +
+            sha_sequences +
+            sha_outputs +
+            spend_type +
+            input_index
+        )
+        
+        # Per key-path spending, non aggiungere nulla di extra al messaggio
+        # Il messaggio è già completo secondo BIP341
+        
+        # Calcola sighash
+        sighash = tagged_hash("TapSighash", message)
+        
+        # Applica tweak alla private key per key-path spending
+        tweaked_private_key = taproot_tweak_private_key(wallet.private_key)
+        
+        # Firma con Schnorr
+        signature = schnorr_sign(tweaked_private_key, sighash)
+        
+        # Se sighash_type non è 0 (SIGHASH_DEFAULT), aggiunge il byte
+        if sighash_type != 0:
+            signature += bytes([sighash_type])
+        
+        # Witness stack per Taproot key-path: solo la firma
+        return [signature]
+    
     def build_transaction(self, utxos: List[UTXO], outputs: List[Tuple[int, bytes]], 
                          wallet: Wallet, fee_rate: float) -> Tuple[Transaction, int, int]:
         """Costruisce e firma una transazione completa"""
@@ -321,10 +431,19 @@ class TransactionBuilder:
             # Firma input
             for i, (utxo, (amount, prev_spk, is_witness)) in enumerate(zip(utxos, prevout_info)):
                 if is_witness:
-                    # Input SegWit
-                    witness_stack = self.sign_input_witness(tx, i, prev_spk, amount, wallet)
-                    tx.witnesses[i] = witness_stack
-                    # ScriptSig rimane vuoto per SegWit
+                    # Determina il tipo di witness script
+                    from script_types import get_script_type_from_spk
+                    script_type = get_script_type_from_spk(prev_spk)
+                    
+                    if script_type == "p2tr":
+                        # Input Taproot
+                        witness_stack = self.sign_input_taproot(tx, i, prev_spk, amount, wallet)
+                        tx.witnesses[i] = witness_stack
+                    else:
+                        # Input SegWit v0 (P2WPKH)
+                        witness_stack = self.sign_input_witness(tx, i, prev_spk, amount, wallet)
+                        tx.witnesses[i] = witness_stack
+                    # ScriptSig rimane vuoto per witness scripts
                 else:
                     # Input legacy
                     script_sig = self.sign_input_legacy(tx, i, prev_spk, wallet)

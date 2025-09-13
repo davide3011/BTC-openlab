@@ -86,7 +86,18 @@ def main():
         
         # 5. Select UTXOs for the transaction
         print("\nSelezione UTXO...")
-        selected_utxos = utxo_manager.select_utxos(utxos, send_amount, fee_rate)
+        
+        # Determina il peso dell'input in base al tipo di wallet
+        if wallet.is_p2sh:
+            input_weight = INPUT_WEIGHT_P2SH
+        elif wallet.script_type == "p2wpkh":
+            input_weight = INPUT_WEIGHT_P2WPKH
+        elif wallet.script_type == "p2pk":
+            input_weight = INPUT_WEIGHT_P2PK
+        else:
+            input_weight = INPUT_WEIGHT_P2PKH  # Default per P2PKH e P2TR
+        
+        selected_utxos = utxo_manager.select_utxos(utxos, send_amount, fee_rate, input_weight)
         
         selected_total = sum(utxo.amount for utxo in selected_utxos)
         print(f"UTXO selezionati: {len(selected_utxos)}")

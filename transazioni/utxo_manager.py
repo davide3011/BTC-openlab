@@ -2,7 +2,7 @@ import math
 from typing import List, Dict, Any
 
 from electrum_client import ElectrumClient
-from wallet_utils import spk_p2pkh_from_h160, spk_p2wpkh_from_h160
+from wallet_utils import spk_p2pkh_from_h160, spk_p2wpkh_from_h160, spk_p2tr_from_output_key
 from crypto_utils import scripthash_from_spk
 from config import DUST_LIMIT, INPUT_WEIGHT_P2PKH, INPUT_WEIGHT_P2WPKH
 
@@ -69,11 +69,27 @@ class UTXOManager:
         return utxos
     
     def collect_utxos_for_wallet(self, h160: bytes, include_unconfirmed: bool = True, wallet=None) -> List[UTXO]:
-        """Raccoglie UTXO per un wallet (P2PKH, P2WPKH e P2PK)"""
+        """Raccoglie UTXO per un wallet (P2PKH, P2WPKH, P2PK, P2SH e P2TR)"""
         utxos = []
         
+        # Se il wallet è P2TR, cerca UTXO P2TR
+        if wallet and hasattr(wallet, 'script_type') and wallet.script_type == 'p2tr':
+            # Per P2TR, h160 contiene l'output key (32 bytes)
+            # Dobbiamo calcolare l'output key tweaked dalla internal key
+            from crypto_utils import taproot_tweak_public_key
+            try:
+                # h160 per P2TR contiene già l'output key tweaked (32 bytes)
+                spk_p2tr_script = spk_p2tr_from_output_key(h160)
+                utxos.extend(self.collect_utxos_for_spk(spk_p2tr_script, include_unconfirmed))
+            except Exception as e:
+                print(f"Errore nella creazione scriptPubKey P2TR: {e}")
+        # Se il wallet è P2SH, cerca UTXO P2SH
+        elif wallet and hasattr(wallet, 'is_p2sh') and wallet.is_p2sh:
+            from script_types import spk_p2sh
+            spk_p2sh_script = spk_p2sh(h160)  # h160 contiene l'hash dello script per P2SH
+            utxos.extend(self.collect_utxos_for_spk(spk_p2sh_script, include_unconfirmed))
         # Se il wallet è P2PK, cerca solo UTXO P2PK
-        if wallet and hasattr(wallet, 'address') and len(wallet.address) > 50:  # Chiave pubblica hex
+        elif wallet and hasattr(wallet, 'address') and len(wallet.address) > 50:  # Chiave pubblica hex
             from script_types import spk_p2pk
             spk_p2pk_script = spk_p2pk(h160)  # h160 contiene la chiave pubblica per P2PK
             utxos.extend(self.collect_utxos_for_spk(spk_p2pk_script, include_unconfirmed))

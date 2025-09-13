@@ -6,24 +6,110 @@
 Questo progetto è un **programma didattico** per comprendere, passo-passo, come:
 1) interrogare un server **Electrum/Fulcrum** per ottenere UTXO;
 2) **costruire** una transazione Bitcoin con output standard (P2PKH, P2WPKH) e storico (P2PK);
-3) **firmare** gli input (legacy e SegWit v0 secondo BIP143);
+3) **firmare** gli input della transazione;
 4) **trasmettere** la transazione in rete;
 5) allegare un **messaggio** on-chain usando un output **`OP_RETURN`** (novità del programma).
 
 > **Attenzione**: non è un wallet di produzione. Le chiavi sono conservate in **chiaro** in file JSON; non usare su mainnet con fondi reali. In produzione servirebbero **HD wallet** (BIP32/BIP39) per rotazione indirizzi, backup con seed, xpub watch-only, privacy e sicurezza migliori.
 
-Il programma consente transazioni **P2PK** (*pay-to-pubkey*), con `scriptPubKey` del tipo:
+Il programma supporta diversi tipi di script Bitcoin:
 
+### **P2PKH** (*pay-to-pubkey-hash*)
+```
+OP_DUP OP_HASH160 <pubkey_hash> OP_EQUALVERIFY OP_CHECKSIG
+```
+Il formato **standard** più utilizzato in Bitcoin. L'indirizzo contiene l'hash160 della chiave pubblica, che viene rivelata solo al momento della spesa. Usa indirizzi **Base58** con prefisso `1` (mainnet), `m`/`n` (testnet/regtest). Utilizza firme **ECDSA** in formato **DER** con codifica **low-S** secondo **BIP66**, con preimage di firma legacy che include la versione, input/output e nSequence. La firma viene concatenata con il byte `SIGHASH_ALL (0x01)` per proteggere l'intera transazione.
+
+### **P2WPKH** (*pay-to-witness-pubkey-hash*)
+```
+OP_0 <20-byte-pubkey-hash>
+```
+Versione **SegWit v0** (Segregated Witness) di P2PKH, introdotta con **BIP141/143/144**. Questo formato offre diversi vantaggi:
+
+- **Fee ridotte**: separa i dati witness (firme e chiavi pubbliche) dal calcolo della dimensione base della transazione. Il witness ha un "peso" ridotto (1 invece di 4), risultando in fee minori rispetto a P2PKH legacy.
+
+- **Malleabilità risolta**: il TXID esclude i dati witness, rendendolo immutabile da terze parti. Questo risolve il problema della malleabilità delle transazioni, fondamentale per protocolli Layer-2 come Lightning Network.
+
+- **Indirizzi Bech32**: utilizza il formato nativo `bc1q`/`tb1q`/`bcrt1q` (BIP173) che offre:
+  - Migliore rilevamento errori
+  - Case-insensitive
+  - QR code più compatti
+  - Codifica più efficiente (32 bit vs 40 bit di Base58)
+
+- **Script più semplice**: lo script è ridotto a:
+  ```
+  OP_0 <20-byte-pubkey-hash>
+  ```
+  mentre i dati di firma vanno nel witness stack separato:
+  ```
+  [signature, public_key]
+  ```
+
+- **Preimage di firma BIP143**: utilizza un nuovo algoritmo di hashing che include esplicitamente gli importi degli input, migliorando sicurezza e efficienza della firma.
+
+### **P2PK** (*pay-to-pubkey*)
 ```
 <pubkey> OP_CHECKSIG
 ```
+Le **prime transazioni** di Bitcoin (specialmente alcune coinbase e pagamenti iniziali) erano P2PK. Oggi questo formato è **in disuso** ma mantenuto per scopi **didattici**.
 
-Le **prime transazioni** di Bitcoin (specialmente alcune coinbase e pagamenti iniziali) erano P2PK. Oggi questo formato è **in disuso**:
-- **Privacy/superficie di rischio**: con P2PK la **chiave pubblica è rivelata già in ricezione** (quando l'UTXO viene creato). Con P2PKH/P2WPKH la pubkey si rivela **solo al momento della spesa**. Esporla prima amplia (in teoria) il rischio nel lungo periodo.
-- **Interoperabilità/UX**: i wallet moderni e gli explorer standard usano P2PKH/P2WPKH/P2TR; P2PK non è più generato di default.
-- **Efficienza**: P2WPKH è più leggero (fee minori) e non soffre di malleabilità del TXID.
+### **P2SH Multisig** (*pay-to-script-hash multifirma*)
+```
+OP_HASH160 <script_hash> OP_EQUAL
+```
+Supporta transazioni **multifirma** (es. 2-di-3) dove sono richieste **m** firme su **n** chiavi totali. Il `redeemScript` contiene la logica multisig:
+```
+OP_2 <pubkey1> <pubkey2> <pubkey3> OP_3 OP_CHECKMULTISIG
+```
 
-In questo progetto **manteniamo P2PK** per scopi **didattici** (confronto fra script, firma e serializzazione).
+### **P2TR** (*pay-to-taproot*)
+```
+OP_1 <32-byte-output-key>
+```
+Supporta **Taproot** (SegWit v1), l'upgrade più recente di Bitcoin che introduce numerosi miglioramenti:
+
+- **Privacy migliorata**:
+  - Le transazioni key-path sono indistinguibili da quelle script-path
+  - Gli script alternativi rimangono nascosti finché non vengono usati
+  - Le firme Schnorr permettono key/signature aggregation
+
+- **Efficienza superiore**:
+  - Firme **Schnorr** di 64 byte (vs 70-72 byte ECDSA)
+  - Batch verification più veloce delle firme
+  - Script più compatti grazie al MAST (Merklized Alternative Script Trees)
+
+- **Nuove possibilità**:
+  - Script complessi con costi ridotti grazie al MAST
+  - Threshold signatures native con Schnorr
+  - Cross-input signature aggregation (futura)
+
+Implementa i seguenti BIP:
+- **BIP340**: introduce le firme Schnorr
+  - Deterministiche (no random k)
+  - Linearità per aggregazione
+  - Batch verification nativa
+  
+- **BIP341**: definisce la struttura Taproot
+  - Key-path: spesa diretta con chiave tweaked
+  - Script-path: script alternativi in Merkle tree
+  - Nuovo sighash per migliore sicurezza
+  
+- **BIP342**: nuovo linguaggio script Tapscript
+  - Opcode ottimizzati
+  - 32-byte points
+  - Limiti script aumentati
+
+Utilizza **Bech32m** (BIP350) per indirizzi che iniziano con:
+- `bc1p` (mainnet)
+- `tb1p` (testnet)
+- `bcrt1p` (regtest)
+
+> **Limitazione P2TR**: attualmente il supporto Taproot è limitato a **transazioni semplici** che utilizzano solo il key-path spending (spesa diretta con la chiave). Non sono ancora implementati:
+> - **Script-path spending**: la possibilità di spendere usando script alternativi
+> - **Merkle trees**: strutture ad albero per organizzare script multipli
+> - **Script complessi**: condizioni di spesa più elaborate oltre alla semplice firma
+>
+> Questo significa che al momento si possono creare solo transazioni Taproot base con firma singola, senza la flessibilità degli script complessi che Taproot permette nativamente.
 
 ---
 ## Perché servono gli **HD wallet**
@@ -46,6 +132,8 @@ OP_RETURN <PUSHDATA>
 - **Troncatura** automatica a ~**80 byte**.
 - Aumenta la **dimensione** della tx (quindi la fee), ma non influenza la logica di firma degli input.
 
+> **Roadmap:** in lavorazione il supporto a **P2WSH** e **script-path spending** per Taproot (Merkle trees e script complessi).
+
 ---
 
 ## Panoramica
@@ -58,12 +146,14 @@ OP_RETURN <PUSHDATA>
 - **`transaction_builder.py`** costruisce la transazione, calcola fee/vsize, gestisce **OP_RETURN**, aggiunge **resto** se sopra la dust-limit e firma:
   - **Legacy (P2PKH/P2PK)** con preimage legacy + firma DER low-S.
   - **SegWit (P2WPKH)** con preimage **BIP143** e witness stack `[sig, pubkey]`.
+  - **P2SH Multisig** con redeemScript e firme multiple.
+  - **Taproot (P2TR)** con preimage BIP341 e firma Schnorr (solo key-path spending).
 
-- **`wallet_utils.py`** carica il wallet da JSON, valida/decodifica indirizzi (Base58/Bech32) o chiave pubblica (P2PK).
+- **`wallet_utils.py`** loads wallets from JSON, validates/decodes addresses (Base58/Bech32/Bech32m) and public keys (P2PK/P2TR). Handles key derivation and tweaking for Taproot.
 
-- **`script_types.py`** genera gli scriptPubKey e i relativi signer per i tipi supportati.
+- **`script_types.py`** generates scriptPubKey and corresponding signers for all supported types (P2PKH, P2WPKH, P2PK, P2SH multisig, P2TR). Includes Taproot key-path spending.
 
-- **`crypto_utils.py`** contiene finzioni di utilità: doppio SHA256, VarInt, DER low-S, Bech32, ecc.
+- **`crypto_utils.py`** contains cryptographic utilities: double SHA256, VarInt, DER low-S encoding, Bech32/Bech32m encoding/decoding, Schnorr signatures, tagged hashes for BIP340/341.
 
 ---
 
@@ -87,15 +177,20 @@ Utente ─ main.py ─ ElectrumClient ── (Fulcrum/Electrum)
 - `ElectrumClient(host, port, use_tls)` apre il socket (opz. TLS) e fornisce `request(method, params)` con retry/timeout.
 
 ### 3) Raccolta UTXO del wallet
-- Costruiamo gli `scriptPubKey` applicabili alla stessa chiave (P2PKH, P2WPKH e, se wallet è P2PK, anche P2PK).
+- Costruiamo gli `scriptPubKey` applicabili alla stessa chiave (P2PKH, P2WPKH, P2TR e, se wallet è P2PK, anche P2PK).
 - Per ciascuno, calcoliamo lo **scripthash** (SHA256 dello `scriptPubKey`, little-endian) e chiamiamo `blockchain.scripthash.listunspent`.
-- Gli elementi sono mappati in `UTXO(txid, vout, amount, height)`.
+- Gli elementi sono mappati in `UTXO(txid, vout, amount, height, scriptPubKey)` con il formato di output originale.
+- Supporta anche UTXO multifirma P2SH se il wallet contiene le chiavi necessarie.
 
 ### 4) Input utente
-- **Destinatario**: indirizzo Base58/Bech32 **oppure** **pubkey hex** (per inviare a **P2PK**).
+- **Destinatario**: indirizzo Base58/Bech32/Bech32m **oppure** **pubkey hex** (per inviare a **P2PK**). Supporta:
+  - Legacy Base58 (`1`/`m`/`n`)
+  - SegWit Bech32 (`bc1q`/`tb1q`/`bcrt1q`) 
+  - Taproot Bech32m (`bc1p`/`tb1p`/`bcrt1p`)
+  - Chiave pubblica hex (per P2PK didattico)
 - **Importo** in satoshi.
 - **Fee rate** (sat/vB) con default da `config.py`.
-- **Messaggio opzionale** ? se presente, viene creato l'output `OP_RETURN` (0 sat, payload UTF-8 = ~80B): `0x6a <len> <bytes>`.
+- **Messaggio opzionale** se presente, viene creato l'output `OP_RETURN` (0 sat, payload UTF-8 = ~80B): `0x6a <len> <bytes>`.
 
 ### 5) Selezione UTXO (greedy + stima fee)
 - `select_utxos(utxos, target_amount, fee_rate)` ordina per valore e somma finché `totale = importo + fee_stimata`.
@@ -103,11 +198,15 @@ Utente ─ main.py ─ ElectrumClient ── (Fulcrum/Electrum)
 
 ### 6) Costruzione della transazione
 - Preleva, per ogni input, i **prevout** (via `blockchain.transaction.get`) per ottenere `amount` e `scriptPubKey` originali.
-- Crea gli **output**: destinatario, (opz.) `OP_RETURN`, (opz.) **resto** se = `DUST_LIMIT` (altrimenti aggiunto alla fee).
-- **Firma input**:
+- Crea gli **output**: destinatario, (opz.) `OP_RETURN`, (opz.) **resto** se ≥ `DUST_LIMIT` (altrimenti aggiunto alla fee).
+- **Firma input** secondo il tipo:
   - **Legacy (P2PKH/P2PK)**: costruzione *preimage* legacy, `z = SHA256d(preimage)`, firma ECDSA **DER low-S** `SIGHASH_ALL`, `scriptSig = <sig+hashtype> <pubkey>` (P2PKH) o `<sig+hashtype>` (P2PK).
+  - **P2SH Multisig**: firma **m** chiavi del `redeemScript`, `scriptSig = OP_0 <sig1> <sig2> ... <redeemScript>`. Attualmente supporta solo configurazioni 2-di-3.
   - **SegWit v0 (P2WPKH)**: *BIP143* con `hashPrevouts/hashSequence/hashOutputs`, `scriptCode = P2PKH(pubkey_hash)`, witness stack `[sig+hashtype, pubkey]`, `scriptSig` vuoto.
+  - **Taproot (P2TR)**: *BIP341* sighash con **key-path spending**, firma **Schnorr** 64-byte, witness stack `[signature]` (no pubkey), `scriptSig` vuoto. Solo spesa key-path implementata.
+  - **P2WSH e script-path P2TR**: in sviluppo, non ancora supportati.
 - Calcola `vsize/weight` dalla serializzazione effettiva (con e senza witness) e **ricalibra la fee**; itera finché **converge**.
+- Supporta la creazione di output `OP_RETURN` con messaggi UTF-8 fino a 80 bytes.
 
 ### 7) Riepilogo, serializzazione e (opz.) broadcast
 - Mostra: destinatario, importo, fee in sat e **sat/vB**, `vsize`, resto, totale speso, ed **hex** completo (incluso witness se presente).
@@ -177,7 +276,9 @@ Esempio di **wallet P2PKH** per **regtest** (che dovrà essere salvato all'inter
 Sono supportati:
 - **P2PKH** (legacy, Base58)
 - **P2WPKH** (SegWit v0, Bech32 `bc1q`/`tb1q`/`bcrt1q`)
-- **P2PK** (chiave pubblica in esadecimale come "indirizzo" - come nelle primissime transazioni in bitcoin)
+- **P2PK** (chiave pubblica in esadecimale come "indirizzo")
+- **P2SH Multisig** (script multifirma, Base58 con prefisso `3`/`2`)
+- **P2TR** (Taproot, Bech32m `bc1p`/`tb1p`/`bcrt1p`)
 
 > Puoi avere **più file `.json`**: all'avvio ti verrà chiesto di **selezionare** quale usare.
 
@@ -195,18 +296,14 @@ Sono supportati:
 5. **Seleziona il wallet** dalla lista proposta.
 6. Il programma **si connette** al server e **raccoglie gli UTXO** (mostra bilancio e dettaglio UTXO).
 7. Inserisci:
-   - **Indirizzo destinatario** (Base58/Bech32 o **pubkey hex** per P2PK didattico)
+   - **Indirizzo destinatario** (Base58/Bech32/Bech32m o **pubkey hex** per P2PK didattico)
    - **Importo** in **satoshi**
    - **Fee rate** in **sat/vB** (premi `Invio` per usare `DEFAULT_FEE_RATE`)
    - **Messaggio opzionale**: se rispondi "s", aggiunge un **output OP_RETURN** (0 sat) con max **80 byte**
+   - **Conferma**: rivedi i dettagli e conferma con "s" per procedere
 8. Il programma **seleziona** gli UTXO, **costruisce e firma** la transazione.
 9. Vedi il **riepilogo**: destinatario, importo, eventuale messaggio, **fee** (sat e sat/vB), **vsize**, **resto**, **raw hex**.
 10. Conferma: `Inviare la transazione? [s/N]` scrivi **`s`** per **trasmettere**. In caso positivo viene mostrato il **TXID**.
-
----
-
-
-> **Roadmap:** in lavorazione il supporto a **P2SH**, **P2WSH** e **P2TR** (script multifirma, script più complessi e traproot).
 
 ---
 
